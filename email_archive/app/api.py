@@ -7,12 +7,16 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
+from . import holds as holdsvc
 from . import repository as repo
 from .config import settings
 from .db import get_pool
 from .parser import parse_eml
 from .schemas import (
+    HoldCreate,
+    HoldOut,
     IngestResult,
+    ManualDispositionCreate,
     MessageSummary,
     ReparseCreate,
     SearchHit,
@@ -181,6 +185,8 @@ async def activate_version(sha: str, version_no: int, request: Request,
         detail = await repo.activate_version(pool, sha, version_no, actor=actor)
     except repo.RepoError as exc:
         raise HTTPException(404, str(exc))
+    except repo.JobConflict as exc:
+        raise HTTPException(409, str(exc))
     return _serialize_detail(detail, include_raw_html=False) | {
         "switched": detail["switched"]}
 
@@ -199,6 +205,9 @@ async def create_reparse(sha: str, body: ReparseCreate, request: Request,
             pool, sha, body.policy_version, body.reason, actor)
     except repo.RepoError:
         raise HTTPException(404, "eml not found")
+    except repo.HeldByDisposition as exc:
+        # 处置运行中：明确的拒绝（不是静默排队，调用方稍后重试）
+        raise HTTPException(409, str(exc))
     d = dict(job)
     d.update({"attempts_history": [], "versions": []})
     return {**d, "created": created,
@@ -241,6 +250,126 @@ async def retry_job(job_id: int, pool=Depends(get_pool)):
         raise HTTPException(404, "job not found")
     except repo.JobConflict as exc:
         raise HTTPException(409, str(exc))
+
+
+# ------------------------------------------------------------ 证据保全 / 到期处置
+
+@router.post("/holds", response_model=HoldOut, status_code=201)
+async def create_hold(body: HoldCreate, pool=Depends(get_pool)):
+    if body.hold_type not in ("single", "query"):
+        raise HTTPException(400, "hold_type must be single|query")
+    if body.hold_type == "single" and not body.eml_sha256:
+        raise HTTPException(400, "single hold requires eml_sha256")
+    try:
+        row, created = await holdsvc.create_policy(
+            pool, name=body.name, hold_type=body.hold_type, reason=body.reason,
+            created_by=body.created_by, query_filter=body.query_filter,
+            eml_sha256=body.eml_sha256, expires_at=body.expires_at,
+            idempotency_key=body.idempotency_key, activate=body.activate)
+    except holdsvc.HoldError as exc:
+        # “eml not found” 与 DSL 错误都是 4xx
+        raise HTTPException(400 if "filter" in str(exc) else 404, str(exc))
+    d = dict(row)
+    d["target_count"] = None
+    d["created"] = created
+    return d
+
+
+@router.get("/holds")
+async def list_holds(status: str | None = Query(None), pool=Depends(get_pool)):
+    if status and status not in ("draft", "active", "suspended", "expired",
+                                 "purging", "completed"):
+        raise HTTPException(400, "invalid status")
+    return await holdsvc.list_policies(pool, status)
+
+
+@router.get("/holds/{policy_id}")
+async def get_hold(policy_id: int, pool=Depends(get_pool)):
+    d = await holdsvc.get_policy_detail(pool, policy_id)
+    if not d:
+        raise HTTPException(404, "hold policy not found")
+    return d
+
+
+@router.post("/holds/{policy_id}/activate")
+async def activate_hold(policy_id: int, request: Request, pool=Depends(get_pool)):
+    actor = request.headers.get("x-actor", "api")
+    try:
+        row = await holdsvc.activate_policy(pool, policy_id, actor=actor)
+    except holdsvc.HoldError as exc:
+        code = 409 if isinstance(exc, holdsvc.PolicyStateError) else 404
+        raise HTTPException(code, str(exc))
+    return dict(row)
+
+
+@router.post("/holds/{policy_id}/suspend")
+async def suspend_hold(policy_id: int, request: Request, pool=Depends(get_pool)):
+    actor = request.headers.get("x-actor", "api")
+    try:
+        row = await holdsvc.suspend_policy(pool, policy_id, actor=actor,
+                                           detail="manual suspend")
+    except holdsvc.HoldError as exc:
+        code = 409 if isinstance(exc, holdsvc.PolicyStateError) else 404
+        raise HTTPException(code, str(exc))
+    return dict(row)
+
+
+@router.post("/holds/{policy_id}/resume")
+async def resume_hold(policy_id: int, request: Request, pool=Depends(get_pool)):
+    actor = request.headers.get("x-actor", "api")
+    try:
+        row = await holdsvc.resume_policy(pool, policy_id, actor=actor)
+    except holdsvc.HoldError as exc:
+        code = 409 if isinstance(exc, holdsvc.PolicyStateError) else 404
+        raise HTTPException(code, str(exc))
+    return dict(row)
+
+
+@router.post("/holds/{policy_id}/dispose", status_code=202)
+async def dispose_expired_hold(policy_id: int, request: Request,
+                               pool=Depends(get_pool)):
+    """为已到期策略显式创建处置运行（重复提交幂等：同策略仅一个 running）。"""
+    actor = request.headers.get("x-actor", "api")
+    try:
+        row, created = await holdsvc.create_expiry_disposition_run(
+            pool, policy_id, actor=actor)
+    except holdsvc.HoldError as exc:
+        code = 409 if isinstance(exc, holdsvc.PolicyStateError) else 404
+        raise HTTPException(code, str(exc))
+    return {**dict(row), "created": created}
+
+
+@router.post("/dispositions", status_code=202)
+async def create_manual_disposition(body: ManualDispositionCreate,
+                                    pool=Depends(get_pool)):
+    """手动到期处置：默认清除全库无保全且无活动任务的邮件（可指定 sha 子集）。"""
+    row, created = await holdsvc.create_manual_retention_run(
+        pool, actor=body.actor, reason=body.reason,
+        idempotency_key=body.idempotency_key, shas=body.eml_sha256)
+    return {**dict(row), "created": created}
+
+
+@router.get("/dispositions")
+async def list_dispositions(limit: int = Query(100, ge=1, le=500),
+                            pool=Depends(get_pool)):
+    return await holdsvc.list_runs(pool, limit)
+
+
+@router.get("/dispositions/{run_id}")
+async def get_disposition(run_id: int, pool=Depends(get_pool)):
+    d = await holdsvc.get_run_detail(pool, run_id)
+    if not d:
+        raise HTTPException(404, "disposition run not found")
+    return d
+
+
+@router.get("/audit")
+async def disposition_audit(eml_sha256: str | None = None,
+                            limit: int = Query(100, ge=1, le=1000),
+                            pool=Depends(get_pool)):
+    if eml_sha256:
+        _validate_sha(eml_sha256)
+    return await holdsvc.list_audit(pool, eml_sha256, limit)
 
 
 # ------------------------------------------------------------ 受控下载

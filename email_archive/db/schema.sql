@@ -298,4 +298,164 @@ CREATE TABLE IF NOT EXISTS identity_conflicts (
 );
 CREATE INDEX IF NOT EXISTS idx_conflicts_eml ON identity_conflicts(eml_sha256);
 
+-- 11. 证据保全（Legal Hold）策略
+CREATE TABLE IF NOT EXISTS hold_policies (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name            TEXT NOT NULL,
+    hold_type       TEXT NOT NULL CHECK (hold_type IN ('single','query')),
+    -- single: 目标在 targets 中；query: 激活时把匹配结果快照到 targets（冻结证据范围）
+    query_filter    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reason          TEXT NOT NULL,
+    created_by      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN
+                        ('draft','active','suspended','expired','purging','completed')),
+    activated_at    TIMESTAMPTZ,
+    expires_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    -- 同一策略重复提交（创建/到期处置触发）的幂等键
+    idempotency_key TEXT UNIQUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 每个策略只有一个由其到期触发的活动/最近处置运行
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hold_disposition_run
+    ON hold_policies(id) WHERE status IN ('purging');
+CREATE INDEX IF NOT EXISTS idx_holds_status ON hold_policies(status);
+
+-- 保全目标（单封 EML）。eml_sha256 不用 FK 级联：策略审计须在邮件被处置后仍然存在。
+CREATE TABLE IF NOT EXISTS hold_policy_targets (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    policy_id       BIGINT NOT NULL REFERENCES hold_policies(id) ON DELETE CASCADE,
+    eml_sha256      TEXT NOT NULL,
+    added_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 目标在处置期间被确认仍受保全/被释放，便于审计核对
+    state           TEXT NOT NULL DEFAULT 'held'
+                    CHECK (state IN ('held','released')),
+    UNIQUE (policy_id, eml_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_hold_targets_eml ON hold_policy_targets(eml_sha256);
+
+CREATE TABLE IF NOT EXISTS hold_policy_events (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    policy_id       BIGINT NOT NULL REFERENCES hold_policies(id) ON DELETE CASCADE,
+    action          TEXT NOT NULL CHECK (action IN
+                        ('created','updated','activated','suspended','resumed',
+                         'expired','disposition_started','disposition_completed')),
+    actor           TEXT NOT NULL,
+    detail          TEXT,
+    at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_hold_events_policy ON hold_policy_events(policy_id, at);
+
+-- 邮件是否仍受任一 active 策略保全（目标在激活时快照，suspended 不提供保护）。
+CREATE OR REPLACE FUNCTION eml_is_held(p_sha TEXT, p_at TIMESTAMPTZ DEFAULT now())
+RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM hold_policy_targets t
+          JOIN hold_policies p ON p.id = t.policy_id
+         WHERE t.eml_sha256 = p_sha
+           AND t.state = 'held'
+           AND p.status = 'active'
+           AND (p.expires_at IS NULL OR p.expires_at > p_at))
+$$;
+
+-- 12. 到期处置运行（游标即 disposition_run_targets，崩溃安全、可恢复、幂等）
+CREATE TABLE IF NOT EXISTS disposition_runs (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    kind            TEXT NOT NULL CHECK (kind IN ('hold_expiry','manual_retention')),
+    hold_policy_id  BIGINT NULL REFERENCES hold_policies(id) ON DELETE CASCADE,
+    reason          TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'running' CHECK (status IN
+                        ('running','aborted','completed','failed')),
+    -- abort 原因：如处置过程中目标恢复保全
+    last_note       TEXT,
+    total_targets   INT NOT NULL DEFAULT 0,
+    purged_count    INT NOT NULL DEFAULT 0,
+    skipped_count   INT NOT NULL DEFAULT 0,
+    idempotency_key TEXT UNIQUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dispo_status ON disposition_runs(status);
+-- 同一保全策略不得并发两个进行中的处置运行
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dispo_active_per_hold
+    ON disposition_runs(hold_policy_id)
+    WHERE hold_policy_id IS NOT NULL AND status = 'running';
+
+CREATE TABLE IF NOT EXISTS disposition_run_targets (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id          BIGINT NOT NULL REFERENCES disposition_runs(id) ON DELETE CASCADE,
+    eml_sha256      TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN
+                        ('pending','purged','skipped_held','skipped_active_job',
+                         'skipped_missing','failed')),
+    -- purged: 被删版本摘要（版本号/解析状态/部件数），审计快照
+    deleted_summary JSONB,
+    attempts        INT NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    processed_at    TIMESTAMPTZ,
+    UNIQUE (run_id, eml_sha256)
+);
+-- 恢复游标：只取 pending（部分唯一索引）
+CREATE INDEX IF NOT EXISTS idx_dispo_targets_pending
+    ON disposition_run_targets(run_id, id)
+    WHERE state = 'pending';
+
+-- 处置审计：每个被删对象一行，只追加（触发器禁止 UPDATE/DELETE）。
+-- 不用指向 raw_emls 的 FK：审计必须在对象删除后存活。
+CREATE TABLE IF NOT EXISTS disposition_audit (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id          BIGINT NOT NULL REFERENCES disposition_runs(id) ON DELETE CASCADE,
+    eml_sha256      TEXT NOT NULL,
+    object_type     TEXT NOT NULL CHECK (object_type IN
+                        ('raw_eml','parse_version','attachment_file','spill_file',
+                         'reparse_job')),
+    object_ref      TEXT,             -- 版本号 / 存储相对路径 / job id
+    summary         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reason          TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 同一运行内同一对象只能审计一次（重启恢复不重复审计）
+    UNIQUE (run_id, object_type, object_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_dispo_audit_eml ON disposition_audit(eml_sha256, at);
+
+CREATE OR REPLACE FUNCTION disposition_audit_appendonly() RETURNS trigger AS $$
+BEGIN
+    IF current_setting('app.archive_purge', true) = 'on' AND TG_OP = 'DELETE' THEN
+        RETURN OLD;  -- 仅受控清除（如管理员清除整个 run）允许
+    END IF;
+    RAISE EXCEPTION 'disposition_audit is append-only (op=%)', TG_OP
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_dispo_audit_appendonly ON disposition_audit;
+CREATE TRIGGER trg_dispo_audit_appendonly
+BEFORE UPDATE OR DELETE ON disposition_audit
+FOR EACH ROW EXECUTE FUNCTION disposition_audit_appendonly();
+
+-- 文件墓场台账：删除分两阶段，杜绝“库已删附件仍可访问/反向孤儿”。
+-- pending：DB 事务已提交（引用已消失），等待物理删除；done：文件已删除。
+-- idempotency：(run_id, relpath) 唯一；文件被引用计数为 0 才允许物理删除。
+CREATE TABLE IF NOT EXISTS file_graveyard (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id          BIGINT NOT NULL REFERENCES disposition_runs(id) ON DELETE CASCADE,
+    eml_sha256      TEXT NOT NULL,
+    relpath         TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('attachment','spill')),
+    size_bytes      BIGINT,
+    state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN
+                        ('pending','deleted','missing','failed')),
+    attempts        INT NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at      TIMESTAMPTZ,
+    UNIQUE (run_id, relpath)
+);
+CREATE INDEX IF NOT EXISTS idx_graveyard_pending ON file_graveyard(id)
+    WHERE state IN ('pending','failed');
+
 COMMIT;

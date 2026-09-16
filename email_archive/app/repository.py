@@ -340,14 +340,28 @@ class JobConflict(Exception):
     pass
 
 
+class HeldByDisposition(Exception):
+    """邮件正在被到期处置：拒绝新建重解析（要求稍后重试）。"""
+
+
 async def create_reparse_job(pool: asyncpg.Pool, sha: str, policy_version: str,
                              reason: str | None, requested_by: str | None
                              ) -> tuple[asyncpg.Record, bool]:
-    """创建任务；同 EML+同策略存在未终态任务时返回该任务（created=False）。"""
+    """创建任务；同 EML+同策略存在未终态任务时返回该任务（created=False）。
+
+    处置协调：该 EML 正在处置运行（游标中）时拒绝新建，避免处置与解析竞争。
+    """
     async with pool.acquire() as conn:
         raw = await conn.fetchval("SELECT eml_sha256 FROM raw_emls WHERE eml_sha256=$1", sha)
         if not raw:
             raise RepoError("eml not found")
+        disposing = await conn.fetchval(
+            """SELECT 1 FROM disposition_run_targets t
+                 JOIN disposition_runs r ON r.id=t.run_id
+                WHERE t.eml_sha256=$1 AND r.status='running' LIMIT 1""", sha)
+        if disposing:
+            raise HeldByDisposition(
+                "eml is in an active disposition run; reparse is rejected until it settles")
         try:
             row = await conn.fetchrow(
                 """INSERT INTO reparse_jobs(eml_sha256, policy_version, reason,
@@ -715,9 +729,22 @@ async def _load_version_detail(conn: asyncpg.Connection, vrow) -> dict:
 
 async def activate_version(pool: asyncpg.Pool, sha: str, version_no: int,
                            actor: str = "api") -> dict:
-    """原子回退/切换当前展示版本；不重新解析，不改变不可变版本。"""
+    """原子回退/切换当前展示版本；不重新解析，不改变不可变版本。
+
+    协调：与处置删除共用每-EML 事务锁；处置运行期间拒绝回退。
+    """
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # 处置游标中有该 EML 时拒绝（保持“处置与回退一致协调”）
+            disposing = await conn.fetchval(
+                """SELECT 1 FROM disposition_run_targets t
+                     JOIN disposition_runs r ON r.id=t.run_id
+                    WHERE t.eml_sha256=$1 AND r.status='running' LIMIT 1""", sha)
+            if disposing:
+                raise JobConflict(
+                    "eml is in an active disposition run; rollback rejected")
+            # 与重解析执行/处置删除互斥（事务结束自动释放）
+            await conn.fetchval("SELECT pg_advisory_xact_lock($1)", _advisory_key(sha))
             cur = await conn.fetchrow(
                 "SELECT version_id FROM current_versions WHERE eml_sha256=$1 FOR UPDATE", sha)
             if not cur:
@@ -909,14 +936,22 @@ async def list_failures(pool: asyncpg.Pool, limit: int) -> dict:
     return {"current_version_failures": versions, "failed_jobs": jobs}
 
 
-async def purge_eml(pool: asyncpg.Pool, sha: str) -> bool:
-    """受控清除：解除不可变触发器（仅此事务）后级联删除；磁盘文件保留（可由外部 GC 处理）。"""
+async def purge_eml(pool: asyncpg.Pool, sha: str, *, allow_held: bool = False) -> bool:
+    """受控清除（测试/管理员直删路径）。
+
+    默认尊重证据保全：受 active 保全保护的 EML 拒绝删除。处置工作流使用 holds.py
+    并写处置审计/墓场，不经过此函数。
+    """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SET LOCAL app.archive_purge='on'")
             exists = await conn.fetchval("SELECT 1 FROM raw_emls WHERE eml_sha256=$1", sha)
             if not exists:
                 return False
+            if not allow_held and await conn.fetchval("SELECT eml_is_held($1)", sha):
+                raise RepoError("eml is protected by an active legal hold")
+            await conn.execute("SET LOCAL app.archive_purge='on'")
+            await conn.execute("DELETE FROM current_switches WHERE eml_sha256=$1", sha)
+            await conn.execute("DELETE FROM identity_conflicts WHERE eml_sha256=$1", sha)
             await conn.execute("DELETE FROM raw_emls WHERE eml_sha256=$1", sha)
             await _recompute_global_conflicts(conn)
     return True

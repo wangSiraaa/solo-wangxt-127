@@ -179,3 +179,38 @@ class ThreadResult(BaseModel):
     strong_thread: list[ThreadMember] = []
     weak_subject_candidates: list[dict[str, Any]] = []
     weak_note: str | None = None
+
+
+# ---------------- 证据保全 / 处置
+
+class HoldCreate(BaseModel):
+    name: str
+    reason: str
+    created_by: str
+    hold_type: str = "single"            # single | query
+    eml_sha256: str | None = None
+    query_filter: dict[str, Any] = {}
+    expires_at: datetime | None = None
+    idempotency_key: str | None = None
+    activate: bool = True
+
+
+class HoldOut(BaseModel):
+    id: int
+    name: str
+    hold_type: str
+    reason: str
+    created_by: str
+    status: str
+    expires_at: datetime | None = None
+    activated_at: datetime | None = None
+    completed_at: datetime | None = None
+    target_count: int | None = None
+    created: bool | None = None
+
+
+class ManualDispositionCreate(BaseModel):
+    reason: str
+    actor: str = "admin"
+    idempotency_key: str | None = None
+    eml_sha256: list[str] | None = None   # 缺省=全库无保全无活动任务邮件
