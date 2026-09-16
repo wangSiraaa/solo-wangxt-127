@@ -1,4 +1,4 @@
-"""API 响应模型：只输出元数据与文本事实，不直接回吐未净化的 HTML 内容类型。"""
+"""API 响应模型。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,11 +9,56 @@ from pydantic import BaseModel
 
 class IngestResult(BaseModel):
     eml_sha256: str
+    created: bool
+    version_id: int
+    version_no: int
+    policy_version: str
     status: str
-    reparsed: bool
-    parts: int
-    issues: int
-    message_id: str | None = None
+
+
+class ReparseJobOut(BaseModel):
+    id: int
+    eml_sha256: str
+    policy_version: str
+    reason: str | None = None
+    requested_by: str | None = None
+    status: str
+    attempts: int
+    max_attempts: int
+    run_after: datetime
+    locked_by: str | None = None
+    lease_until: datetime | None = None
+    last_error: str | None = None
+    result_version_id: int | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    attempts_history: list[dict[str, Any]] = []
+    versions: list[dict[str, Any]] = []
+
+
+class ReparseCreate(BaseModel):
+    policy_version: str = "policy.v2.0"
+    reason: str | None = None
+    requested_by: str | None = None
+
+
+class VersionOut(BaseModel):
+    id: int
+    eml_sha256: str
+    version_no: int
+    parser_version: str
+    policy_version: str
+    parse_status: str
+    part_count: int
+    attachment_count: int
+    source: str
+    reason: str | None = None
+    requested_by: str | None = None
+    job_id: int | None = None
+    created_at: datetime
+    is_current: bool | None = None
+    switched: bool | None = None
 
 
 class IssueOut(BaseModel):
@@ -57,14 +102,20 @@ class ConflictOut(BaseModel):
     conflict_type: str
     message_id: str | None = None
     detail: str
-    detected_at: datetime
+    detected_at: datetime | None = None
 
 
 class MessageDetail(BaseModel):
     eml_sha256: str
+    version_no: int
+    version_id: int
+    policy_version: str
+    parse_status: str
+    is_current: bool
+    created_at: datetime
     message_id: str | None = None
     message_id_raw: str | None = None
-    message_id_count: int
+    message_id_count: int = 1
     subject: str | None = None
     date_raw: str | None = None
     sent_at: datetime | None = None
@@ -73,21 +124,20 @@ class MessageDetail(BaseModel):
     cc_raw: str | None = None
     bcc_raw: str | None = None
     in_reply_to: str | None = None
-    references_list: list[str]
+    references_list: list[str] = []
     body_text: str | None = None
-    # 默认输出转义后的 HTML；原始 HTML 通过 ?include_raw_html=1 显式获取
     body_html_escaped: str | None = None
     body_html: str | None = None
     body_charset: str | None = None
-    html_external_refs: list[str]
-    has_attachments: bool
-    parse_status: str | None = None
-    part_count: int | None = None
-    attachment_count: int | None = None
+    html_external_refs: list[str] = []
+    has_attachments: bool = False
     parts: list[PartOut]
     issues: list[IssueOut]
     addresses: list[AddressOut]
-    conflicts: list[ConflictOut]
+    version_conflicts: list[ConflictOut]
+    identity_conflicts: list[ConflictOut]
+    links: list[dict[str, Any]] = []
+    message: Any = None
     raw_headers: Any = None
 
 
@@ -99,6 +149,8 @@ class MessageSummary(BaseModel):
     from_raw: str | None = None
     to_raw: str | None = None
     has_attachments: bool
+    version_no: int
+    parse_status: str
 
 
 class SearchHit(BaseModel):
@@ -107,6 +159,7 @@ class SearchHit(BaseModel):
     subject: str | None = None
     sent_at: datetime | None = None
     from_raw: str | None = None
+    version_no: int
     rank: float
 
 
@@ -126,12 +179,3 @@ class ThreadResult(BaseModel):
     strong_thread: list[ThreadMember] = []
     weak_subject_candidates: list[dict[str, Any]] = []
     weak_note: str | None = None
-
-
-class FailureOut(BaseModel):
-    eml_sha256: str
-    eml_filename: str | None = None
-    parse_status: str
-    parsed_at: datetime
-    issue_count: int
-    issues: list[IssueOut]
