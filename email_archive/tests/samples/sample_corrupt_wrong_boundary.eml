@@ -1,0 +1,19 @@
+From: sender@example.com
+To: rcpt@example.com
+Subject: corrupted boundary demo
+Message-ID: <corrupt-1@archive.example>
+Date: Wed, 16 Sep 2026 08:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY-A"
+
+--GOOD-BOUNDARY
+Content-Type: text/plain; charset=utf-8
+
+可见正文。
+--GOOD-BOUNDARY
+Content-Type: application/octet-stream; name=data.bin
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename=data.bin
+
+aGVsbG8gYXR0YWNobWVudA==
+--GOOD-BOUNDARY--
